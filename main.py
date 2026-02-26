@@ -1,0 +1,216 @@
+import asyncio
+import re
+import os
+import json
+from datetime import datetime
+from aiohttp import web, ClientSession
+from telethon import TelegramClient
+from telethon.sessions import StringSession
+
+routes = web.RouteTableDef()
+
+BOT = "OSINT_INFO_FATHER_BOT"
+HISTORY_FILE = "history.json"
+
+client = None
+api_id = None
+api_hash = None
+session_string = None
+
+# ---------------- JSON RESPONSE ---------------- #
+
+def j(data):
+    return web.json_response(data)
+
+
+# ---------------- LOAD HISTORY ---------------- #
+
+def load_history():
+    if os.path.exists(HISTORY_FILE):
+        with open(HISTORY_FILE) as f:
+            return json.load(f)
+    return []
+
+
+def save_history(data):
+    with open(HISTORY_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+
+HISTORY = load_history()
+
+
+# ---------------- HOME ---------------- #
+
+@routes.get("/")
+async def home(request):
+    return j({
+        "status": True,
+        "total": len(HISTORY),
+        "history": HISTORY[::-1]
+    })
+
+
+# ---------------- PARSER ---------------- #
+
+def parse_leak(text):
+
+    telephones = re.findall(r'Telephone:\s*(\d+)', text)
+    addresses = re.findall(r'Adres:\s*(.+)', text)
+    docs = re.findall(r'Document number:\s*(\d+)', text)
+    names = re.findall(r'Full name:\s*(.+)', text)
+    fathers = re.findall(r'The name of the father:\s*(.+)', text)
+    regions = re.findall(r'Region:\s*(.+)', text)
+
+    return {
+        "telephones": list(set(telephones)),
+        "addresses": list(set(addresses)),
+        "document_numbers": docs,
+        "full_names": names,
+        "father_names": fathers,
+        "regions": regions
+    }
+
+
+# ---------------- AUTO CONNECT ---------------- #
+
+async def ensure_connected():
+    global client
+
+    if client is None:
+        await start_client()
+
+    if not client.is_connected():
+        await client.connect()
+
+
+async def start_client():
+    global client
+
+    client = TelegramClient(
+        StringSession(session_string),
+        api_id,
+        api_hash
+    )
+
+    await client.start()
+    asyncio.create_task(client.run_until_disconnected())
+
+
+# ---------------- FETCH ---------------- #
+
+async def fetch_all_pages(number):
+
+    await ensure_connected()
+
+    all_text = ""
+
+    await client.send_message(BOT, number)
+    await asyncio.sleep(5)
+
+    msgs = await client.get_messages(BOT, limit=5)
+
+    message = next((m for m in msgs if m.message), None)
+
+    if not message:
+        return ""
+
+    all_text += message.message + "\n"
+
+    while message.buttons:
+
+        next_btn = None
+
+        for row in message.buttons:
+            for btn in row:
+                if "➡" in btn.text or ">" in btn.text:
+                    next_btn = btn.text
+                    break
+
+        if not next_btn:
+            break
+
+        await message.click(text=next_btn)
+        await asyncio.sleep(4)
+
+        msgs = await client.get_messages(BOT, limit=5)
+
+        for m in msgs:
+            if m.id != message.id and m.message:
+                message = m
+                all_text += message.message + "\n"
+                break
+
+    return all_text
+
+
+# ---------------- LOGIN ---------------- #
+
+@routes.get("/login/start/{a_id}/{a_hash}/{session}")
+async def login_start(request):
+    global api_id, api_hash, session_string
+
+    try:
+        api_id = int(request.match_info["a_id"])
+        api_hash = request.match_info["a_hash"]
+        session_string = request.match_info["session"]
+
+        await start_client()
+
+        me = await client.get_me()
+
+        return j({
+            "status": True,
+            "user": me.first_name
+        })
+
+    except Exception as e:
+        return j({"status": False, "error": str(e)})
+
+
+# ---------------- NUMBER API ---------------- #
+
+@routes.get("/number")
+async def number_info(request):
+    try:
+        if not session_string:
+            return j({"status": False, "error": "login required"})
+
+        number = request.query.get("info")
+
+        if not number:
+            return j({"status": False, "error": "number missing"})
+
+        number = "91" + number
+
+        text = await fetch_all_pages(number)
+
+        if not text:
+            return j({"status": True, "data": []})
+
+        parsed = parse_leak(text)
+
+        # DUPLICATE CHECK
+        if not any(x["number"] == number for x in HISTORY):
+
+            HISTORY.append({
+                "number": number,
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "data": parsed
+            })
+
+            save_history(HISTORY)
+
+        return j({
+            "status": True,
+            "data": parsed
+        })
+
+    except Exception as e:
+        return j({"status": False, "error": str(e)})
+
+
+app = web.Application()
+app.add_routes(routes)
+
+web.run_app(app, port=int(os.environ.get("PORT", 8080)))
