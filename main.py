@@ -48,26 +48,26 @@ async def home(request):
     })
 
 
-# ---------------- PARSER ---------------- #
+---------------- PARSER ----------------
 
 def parse_leak(text):
 
-    phones = re.findall(r'\b\d{10,13}\b', text)
+telephones = re.findall(r'Telephone:\s*(\d+)', text)
+addresses = re.findall(r'Adres:\s*(.+)', text)
+docs = re.findall(r'Document number:\s*(\d+)', text)
+names = re.findall(r'Full name:\s*(.+)', text)
+fathers = re.findall(r'The name of the father:\s*(.+)', text)
+regions = re.findall(r'Region:\s*(.+)', text)
 
-    names = re.findall(r'Full.?Name\s*:?\s*(.+)', text, re.I)
-    fathers = re.findall(r'Father.?Name\s*:?\s*(.+)', text, re.I)
-    addresses = re.findall(r'Address\s*:?\s*(.+)', text, re.I)
-    regions = re.findall(r'Region\s*:?\s*(.+)', text, re.I)
-    docs = re.findall(r'Document\s*number\s*:?\s*(\d+)', text, re.I)
+return {
+"telephones": list(set(telephones)),
+"addresses": list(set(addresses)),
+"document_numbers": docs,
+"full_names": names,
+"father_names": fathers,
+"regions": regions
+}
 
-    return {
-        "telephones": list(set(phones)),
-        "addresses": list(set(addresses)),
-        "document_numbers": docs,
-        "full_names": names,
-        "father_names": fathers,
-        "regions": regions
-    }
 
 
 # ---------------- AUTO CONNECT ---------------- #
