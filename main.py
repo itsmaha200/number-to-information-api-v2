@@ -3,27 +3,24 @@ import re
 import os
 import json
 from datetime import datetime
-from aiohttp import web, ClientSession
+from aiohttp import web
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 
 routes = web.RouteTableDef()
 
+client = None
 BOT = "OSINT_INFO_FATHER_BOT"
 HISTORY_FILE = "history.json"
 
-client = None
-api_id = None
-api_hash = None
-session_string = None
 
-# ---------------- JSON RESPONSE ---------------- #
+# ---------------- JSON ---------------- #
 
 def j(data):
     return web.json_response(data)
 
 
-# ---------------- LOAD HISTORY ---------------- #
+# ---------------- HISTORY LOAD ---------------- #
 
 def load_history():
     if os.path.exists(HISTORY_FILE):
@@ -40,7 +37,7 @@ def save_history(data):
 HISTORY = load_history()
 
 
-# ---------------- HOME ---------------- #
+# ---------------- HOME ROUTE ---------------- #
 
 @routes.get("/")
 async def home(request):
@@ -55,15 +52,16 @@ async def home(request):
 
 def parse_leak(text):
 
-    telephones = re.findall(r'Telephone:\s*(\d+)', text)
-    addresses = re.findall(r'Adres:\s*(.+)', text)
-    docs = re.findall(r'Document number:\s*(\d+)', text)
-    names = re.findall(r'Full name:\s*(.+)', text)
-    fathers = re.findall(r'The name of the father:\s*(.+)', text)
-    regions = re.findall(r'Region:\s*(.+)', text)
+    phones = re.findall(r'\b\d{10,13}\b', text)
+
+    names = re.findall(r'Full.?Name\s*:?\s*(.+)', text, re.I)
+    fathers = re.findall(r'Father.?Name\s*:?\s*(.+)', text, re.I)
+    addresses = re.findall(r'Address\s*:?\s*(.+)', text, re.I)
+    regions = re.findall(r'Region\s*:?\s*(.+)', text, re.I)
+    docs = re.findall(r'Document\s*number\s*:?\s*(\d+)', text, re.I)
 
     return {
-        "telephones": list(set(telephones)),
+        "telephones": list(set(phones)),
         "addresses": list(set(addresses)),
         "document_numbers": docs,
         "full_names": names,
@@ -78,23 +76,10 @@ async def ensure_connected():
     global client
 
     if client is None:
-        await start_client()
+        raise Exception("login required")
 
     if not client.is_connected():
         await client.connect()
-
-
-async def start_client():
-    global client
-
-    client = TelegramClient(
-        StringSession(session_string),
-        api_id,
-        api_hash
-    )
-
-    await client.start()
-    asyncio.create_task(client.run_until_disconnected())
 
 
 # ---------------- FETCH ---------------- #
@@ -106,7 +91,7 @@ async def fetch_all_pages(number):
     all_text = ""
 
     await client.send_message(BOT, number)
-    await asyncio.sleep(5)
+    await asyncio.sleep(10)
 
     msgs = await client.get_messages(BOT, limit=5)
 
@@ -131,7 +116,7 @@ async def fetch_all_pages(number):
             break
 
         await message.click(text=next_btn)
-        await asyncio.sleep(4)
+        await asyncio.sleep(6)
 
         msgs = await client.get_messages(BOT, limit=5)
 
@@ -146,16 +131,23 @@ async def fetch_all_pages(number):
 
 # ---------------- LOGIN ---------------- #
 
-@routes.get("/login/start/{a_id}/{a_hash}/{session}")
+@routes.get("/login/start/{api_id}/{api_hash}/{session}")
 async def login_start(request):
-    global api_id, api_hash, session_string
+    global client
 
     try:
-        api_id = int(request.match_info["a_id"])
-        api_hash = request.match_info["a_hash"]
+        api_id = int(request.match_info["api_id"])
+        api_hash = request.match_info["api_hash"]
         session_string = request.match_info["session"]
 
-        await start_client()
+        client = TelegramClient(
+            StringSession(session_string),
+            api_id,
+            api_hash
+        )
+
+        await client.start()
+        asyncio.create_task(client.run_until_disconnected())
 
         me = await client.get_me()
 
@@ -173,8 +165,6 @@ async def login_start(request):
 @routes.get("/number")
 async def number_info(request):
     try:
-        if not session_string:
-            return j({"status": False, "error": "login required"})
 
         number = request.query.get("info")
 
@@ -190,7 +180,7 @@ async def number_info(request):
 
         parsed = parse_leak(text)
 
-        # DUPLICATE CHECK
+        # SAVE HISTORY (no duplicate)
         if not any(x["number"] == number for x in HISTORY):
 
             HISTORY.append({
